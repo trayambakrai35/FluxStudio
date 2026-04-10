@@ -21,3 +21,16 @@ dist-ssr
 *.sln
 *.sw?
 .env
+
+.gemini/
+gha-creds-*.json
+.env
+Shazam/data/
+Shazam/songs/
+Shazam/logs/
+Shazam/.venv/
+Shazam/data/
+Shazam/songs/
+Shazam/logs/
+Shazam/.venv/
+**/__pycache__/

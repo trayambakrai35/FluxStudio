@@ -1,0 +1,23 @@
+# Deep Learning & Model
+torch>=2.0.0
+transformers>=4.40.0
+
+# Audio Processing
+librosa>=0.10.0
+soundfile>=0.12.0
+pydub>=0.25.1
+
+# Vector Similarity Search
+faiss-cpu>=1.7.4
+
+# Numerics / Signal
+numpy>=1.24.0
+scipy>=1.11.0
+
+# API Server
+flask>=3.0.0
+flask-cors>=4.0.0
+
+# Utilities
+tqdm>=4.66.0
+tinytag>=1.10.0
