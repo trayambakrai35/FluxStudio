@@ -59,6 +59,9 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+### 3. Automatic Data Setup
+The reference database is not stored in Git due to its size. It will be **automatically downloaded** from Supabase Storage the first time you start the API server (`python api.py`). No manual steps required.
+
 ---
 
 ## 📖 Usage

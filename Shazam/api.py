@@ -3,20 +3,12 @@ api.py — Flask REST API
 ========================
 Exposes the hybrid song recognition engine as a web service.
 
-Endpoints:
-    POST /recognize   — Upload an audio clip; returns JSON identification result
-    GET  /songs       — List all songs in the database
-    GET  /health      — Health check (also reports DB stats)
-
-Browser audio format support (via ffmpeg/pydub):
-    Chrome/Edge  → audio/webm (Opus)
-    Firefox      → audio/ogg  (Opus)
-    Safari       → audio/mp4  (AAC)
-    All others   → MP3, WAV, FLAC, AAC, OGG
+Features:
+    - Auto-downloads missing database files from Supabase Storage on startup.
+    - Endpoints for song recognition, listing, and health checks.
 
 Run:
     python api.py
-    python api.py --host 0.0.0.0 --port 5000
 """
 
 from __future__ import annotations
@@ -28,21 +20,30 @@ import tempfile
 import time
 from logging.handlers import RotatingFileHandler
 
+import requests
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+from tqdm import tqdm
 
 from database import Database
 from recognizer import recognize
 
 app = Flask(__name__)
 
-# ── Logging ────────────────────────────────────────────────────────────────────
-_LOG_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
-os.makedirs(_LOG_DIR, exist_ok=True)
+# ── Configuration & Paths ──────────────────────────────────────────────────────
+SUPABASE_PROJECT_ID = "jcenzkmqbxbrhapakuxe"
+BUCKET_NAME = "shazam-data"
+REQUIRED_DATA_FILES = ["songs.db", "faiss.index", "metadata.json"]
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+LOG_DIR  = os.path.join(BASE_DIR, "logs")
+
+# ── Logging ────────────────────────────────────────────────────────────────────
+os.makedirs(LOG_DIR, exist_ok=True)
 _handler = RotatingFileHandler(
-    os.path.join(_LOG_DIR, "api.log"),
-    maxBytes=5 * 1024 * 1024,   # 5 MB per file
+    os.path.join(LOG_DIR, "api.log"),
+    maxBytes=5 * 1024 * 1024,
     backupCount=3,
 )
 _handler.setFormatter(logging.Formatter("%(asctime)s  %(levelname)-7s  %(message)s"))
@@ -50,21 +51,17 @@ _handler.setFormatter(logging.Formatter("%(asctime)s  %(levelname)-7s  %(message
 logger = logging.getLogger("shazam.api")
 logger.setLevel(logging.INFO)
 logger.addHandler(_handler)
-logger.addHandler(logging.StreamHandler())   # also print to console
+logger.addHandler(logging.StreamHandler())
 
-# Allow all origins — tighten to your domain in production
+# ── Setup ──────────────────────────────────────────────────────────────────────
 CORS(app, resources={r"/*": {"origins": "*"}})
-
-# Shared DB instance (loaded once at startup)
 _db: Database | None = None
 
-# All formats browsers can produce + common audio formats
 ALLOWED_EXTENSIONS = {
     ".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac",
     ".webm", ".opus", ".mp4", ".weba",
 }
 
-# Map browser MIME types to file extensions
 MIME_TO_EXT = {
     "audio/webm":            ".webm",
     "audio/webm;codecs=opus":".webm",
@@ -76,36 +73,63 @@ MIME_TO_EXT = {
     "audio/flac":            ".flac",
     "audio/aac":             ".aac",
     "audio/x-m4a":           ".m4a",
-    "video/webm":            ".webm",   # some browsers send video/webm for audio
+    "video/webm":            ".webm",
 }
 
+# ── Auto-Download Logic ────────────────────────────────────────────────────────
+
+def bootstrap_data():
+    """Ensure the data directory and required files exist, downloading if necessary."""
+    if not os.path.exists(DATA_DIR):
+        os.makedirs(DATA_DIR)
+        logger.info("Created directory: %s", DATA_DIR)
+
+    missing_files = [f for f in REQUIRED_DATA_FILES if not os.path.exists(os.path.join(DATA_DIR, f))]
+    
+    if not missing_files:
+        return
+
+    logger.info("Database files missing. Starting automatic download from Supabase Storage...")
+    
+    for file_name in missing_files:
+        url = f"https://{SUPABASE_PROJECT_ID}.supabase.co/storage/v1/object/public/{BUCKET_NAME}/{file_name}"
+        dest_path = os.path.join(DATA_DIR, file_name)
+        
+        try:
+            response = requests.get(url, stream=True)
+            if response.status_code != 200:
+                logger.error("Failed to download %s (HTTP %d). Ensure bucket is public.", file_name, response.status_code)
+                continue
+
+            total_size = int(response.headers.get('content-length', 0))
+            with open(dest_path, "wb") as f:
+                with tqdm(total=total_size, unit='B', unit_scale=True, desc=file_name) as pbar:
+                    for data in response.iter_content(1024 * 1024):
+                        f.write(data)
+                        pbar.update(len(data))
+            logger.info("Downloaded: %s", file_name)
+        except Exception as e:
+            logger.error("Error downloading %s: %s", file_name, e)
 
 def get_db() -> Database:
     global _db
     if _db is None:
+        bootstrap_data()
         _db = Database()
     return _db
 
-
 def _ext_from_request(audio_file) -> str:
-    """
-    Determine file extension from filename or Content-Type header.
-    Falls back to .webm (most common browser recording format).
-    """
     if audio_file.filename:
         ext = os.path.splitext(audio_file.filename)[1].lower()
         if ext in ALLOWED_EXTENSIONS:
             return ext
-
     content_type = (audio_file.content_type or "").lower().split(";")[0].strip()
     full_content_type = (audio_file.content_type or "").lower().strip()
-
     return (
         MIME_TO_EXT.get(full_content_type)
         or MIME_TO_EXT.get(content_type)
         or ".webm"
     )
-
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
 
@@ -119,7 +143,6 @@ def health():
         "clap_segments":       db.total_segments(),
     })
 
-
 @app.route("/songs", methods=["GET"])
 def list_songs():
     db   = get_db()
@@ -131,28 +154,8 @@ def list_songs():
     ]
     return jsonify({"songs": songs, "total": len(songs)})
 
-
 @app.route("/recognize", methods=["POST"])
 def recognize_song():
-    """
-    Identify a song from an uploaded audio clip.
-
-    Request (multipart/form-data):
-        audio     — audio file (any browser-produced format)
-        threshold — optional float, minimum confidence % (default 5.0)
-        method    — optional: "hybrid" (default) | "fingerprint" | "semantic"
-
-    Response 200 (application/json):
-        {
-            "status":      "recognized" | "no_match" | "error",
-            "song_name":   "Ae Ajnabi",
-            "artist_name": "Udit Narayan",
-            "confidence":  87.3,
-            "genre":       "Bollywood",
-            "year":        "1998",
-            "method":      "fingerprint" | "semantic"
-        }
-    """
     if "audio" not in request.files:
         return jsonify({"status": "error", "message": "No 'audio' field in request."}), 400
 
@@ -204,7 +207,6 @@ def recognize_song():
         if os.path.exists(tmp.name):
             os.unlink(tmp.name)
 
-
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 def main():
@@ -214,12 +216,10 @@ def main():
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
 
+    # Pre-check data before starting Flask
+    bootstrap_data()
+    
     db = get_db()
-    logger.info(
-        "API starting — songs=%d  fingerprints=%d  segments=%d  http://%s:%d",
-        db.total_songs(), db.total_fingerprints(), db.total_segments(),
-        args.host, args.port,
-    )
     print(f"\n  Shazam Recognition API")
     print(f"  Songs        : {db.total_songs()}")
     print(f"  Fingerprints : {db.total_fingerprints()}")
@@ -228,7 +228,6 @@ def main():
     print(f"  Log file     : logs/api.log\n")
 
     app.run(host=args.host, port=args.port, debug=args.debug)
-
 
 if __name__ == "__main__":
     main()
