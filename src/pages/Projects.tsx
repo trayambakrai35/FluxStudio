@@ -20,10 +20,6 @@ export function Projects() {
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
 
-  useEffect(() => {
-    loadProjects();
-  }, []);
-
   const loadProjects = async () => {
     try {
       const { data, error } = await supabase
@@ -40,15 +36,77 @@ export function Projects() {
     }
   };
 
+  useEffect(() => {
+    if (!user) return;
+
+    loadProjects();
+
+    // Real-time subscription: syncs any DB-level changes (inserts, updates, deletes)
+    // including deletions made directly in Supabase dashboard
+    const channel = supabase
+      .channel('projects-realtime')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',           // listen to INSERT, UPDATE, DELETE
+          schema: 'public',
+          table: 'projects',
+          filter: `user_id=eq.${user.id}`,  // only this user's rows
+        },
+        (payload) => {
+          if (payload.eventType === 'INSERT') {
+            const newProject = payload.new as Project;
+            setProjects((prev) => {
+              // avoid duplicates
+              if (prev.find((p) => p.id === newProject.id)) return prev;
+              return [newProject, ...prev];
+            });
+          }
+
+          if (payload.eventType === 'UPDATE') {
+            const updated = payload.new as Project;
+            setProjects((prev) =>
+              prev.map((p) => (p.id === updated.id ? updated : p))
+            );
+          }
+
+          if (payload.eventType === 'DELETE') {
+            const deletedId = payload.old.id;
+            setProjects((prev) => prev.filter((p) => p.id !== deletedId));
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [user]);
+
   const deleteProject = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     if (!confirm('Are you sure you want to delete this project?')) return;
+    if (!user) return;
 
     try {
-      const { error } = await supabase.from('projects').delete().eq('id', id);
+      const { data, error } = await supabase
+        .from('projects')
+        .delete()
+        .eq('id', id)
+        .eq('user_id', user.id)   // required for RLS policy to match
+        .select();
 
       if (error) throw error;
-      setProjects(projects.filter((p) => p.id !== id));
+
+      // If RLS blocked it (no rows affected), don't update UI
+      if (!data || data.length === 0) {
+        console.error('Delete failed: RLS policy blocked or project not found');
+        return;
+      }
+
+      // UI update is handled by the real-time subscription above,
+      // but we also do it here as an immediate fallback
+      setProjects((prev) => prev.filter((p) => p.id !== id));
     } catch (error) {
       console.error('Error deleting project:', error);
     }
@@ -133,7 +191,9 @@ export function Projects() {
               {searchQuery ? 'No projects found' : 'No projects yet'}
             </h3>
             <p className="text-gray-400 mb-6">
-              {searchQuery ? 'Try a different search term' : 'Create your first project to get started'}
+              {searchQuery
+                ? 'Try a different search term'
+                : 'Create your first project to get started'}
             </p>
             {!searchQuery && (
               <button

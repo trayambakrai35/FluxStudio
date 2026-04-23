@@ -1,3 +1,4 @@
+# Logs
 logs
 *.log
 npm-debug.log*
@@ -6,11 +7,16 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
+# Node / build
+node_modules/
+dist/
+dist-ssr/
 *.local
 
+# Env
+.env
+
+# IDE
 .vscode/*
 !.vscode/extensions.json
 .idea
@@ -20,17 +26,17 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
-.env
 
+# Gemini / misc
 .gemini/
 gha-creds-*.json
-.env
-Shazam/data/
-Shazam/songs/
-Shazam/logs/
-Shazam/.venv/
-Shazam/data/
-Shazam/songs/
-Shazam/logs/
-Shazam/.venv/
+
+# Python
 **/__pycache__/
+Shazam/.venv/
+
+*.zip
+Shazam/data/
+Shazam/songs/
+Shazam/logs/
+my/
